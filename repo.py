@@ -1,17 +1,11 @@
-
-from logging import root
-from turtle import pd
-from urllib import response
 import pandas as pd
 from psycopg2 import sql
 import os
 import psycopg2
-from dotenv import load_dotenv
-
 import requests
 import xml.etree.ElementTree as ET
-import csv
-load_dotenv()
+
+TALLY_URL = "https://obeyable-celina-provisorily.ngrok-free.dev"
 TALLY_URL="https://obeyable-celina-provisorily.ngrok-free.dev"
 
 def get_connection():
