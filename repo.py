@@ -1,176 +1,140 @@
-import pandas as pd
-from psycopg2 import sql
 import os
-import psycopg2
-import requests
+import re
 import xml.etree.ElementTree as ET
+import pandas as pd
 
-TALLY_URL = "http://168.144.119.48/"
-def get_connection():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
-        database=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD")
-    )
+import requests
+from psycopg2 import sql
+from sqlalchemy import create_engine, text
 
 
+TALLY_URL = "http://168.144.119.48/"  # Update with your Tally server URL
+
+
+
+
+
+DATABASE_URL = (
+    f"postgresql://{os.getenv('DB_USER')}:"
+    f"{os.getenv('DB_PASSWORD')}@"
+    f"{os.getenv('DB_HOST')}:"
+    f"{os.getenv('DB_PORT')}/"
+    f"{os.getenv('DB_NAME')}"
+)
+
+engine = create_engine(DATABASE_URL)
 
 
 def list_database_tables_agent():
-
-    conn = get_connection()
+    conn = engine.connect()
 
     try:
-
-        with conn.cursor() as cur:
-
-            cur.execute(
-                """
+        result = conn.execute(
+            text("""
                 SELECT table_name
                 FROM information_schema.tables
                 WHERE table_schema = 'public'
                 ORDER BY table_name;
-                """
-            )
+            """)
+        )
 
-            rows = cur.fetchall()
+        tables = [row[0] for row in result.fetchall()]
 
-            tables = [
-
-                row[0]
-
-                for row in rows
-            ]
-
-            return {
-
-                "total_tables": len(tables),
-
-                "tables": tables
-            }
+        return {
+            "total_tables": len(tables),
+            "tables": tables
+        }
 
     finally:
-
         conn.close()
+
+
 
 
 def get_table_data(table_name: str, limit: int = 100):
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(f'SELECT * FROM "{table_name}" LIMIT :limit'),
+            {"limit": limit}
+        )
 
-    conn = get_connection()
+        rows = result.fetchall()
+        columns = result.keys()
 
-    try:
+        return {
+            "table_name": table_name,
+            "total_rows": len(rows),
+            "columns": list(columns),
+            "data": [dict(zip(columns, row)) for row in rows]
+        }
 
-        with conn.cursor() as cur:
 
-            query = sql.SQL("""
-                SELECT *
-                FROM {}
-                LIMIT %s;
-            """).format(sql.Identifier(table_name))
+def save_to_database(df: pd.DataFrame, table_name: str):
+    if table_name!="":
+        df.to_sql(
+            table_name,
+            engine,
+            if_exists="replace",
+            index=False
+        )
+        return {
+            "total_records": len(df),
+            "message": f"Successfully exported to database table: {table_name}"
+        }
+    else:
+        return {
 
-            cur.execute(query, (limit,))
+            "total_records": len(df),
+            "message": "No table name provided. Data not saved to database."
+        }
+    
 
-            rows = cur.fetchall()
 
-            columns = [desc[0] for desc in cur.description]
 
-            data = [
-                dict(zip(columns, row))
-                for row in rows
-            ]
 
-            return {
-                "table_name": table_name,
-                "total_rows": len(data),
-                "columns": columns,
-                "data": data
-            }
-
-    finally:
-
-        conn.close()
-
-def get_monthly_provision_xml(
-    ledger_name,
-    from_date,
-    to_date,
-    period
-):
-
-    return f"""
-    <ENVELOPE>
-
-        <HEADER>
-            <TALLYREQUEST>Export Data</TALLYREQUEST>
-        </HEADER>
-
-        <BODY>
-
-            <EXPORTDATA>
-
-                <REQUESTDESC>
-
-                    <REPORTNAME>Ledger Monthly Summary</REPORTNAME>
-
-                    <STATICVARIABLES>
-
-                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-
-                        <SVFROMDATE>{from_date}</SVFROMDATE>
-
-                        <SVTODATE>{to_date}</SVTODATE>
-
-                        <LEDGERNAME>{ledger_name}</LEDGERNAME>
-
-                        <SVPERIODICITY>{period}</SVPERIODICITY>
-
-                    </STATICVARIABLES>
-
-                </REQUESTDESC>
-
-            </EXPORTDATA>
-
-        </BODY>
-
-    </ENVELOPE>
-    """
 
 
 def fetch_monthly_provision_data(
     ledger_name,
     from_date,
     to_date,
-    period
+    period,
+    file_name=None
 ):
 
-    xml_data = get_monthly_provision_xml(
-        ledger_name,
-        from_date,
-        to_date,
-        period
-    )
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Ledger Monthly Summary</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                        <LEDGERNAME>{ledger_name}</LEDGERNAME>
+                        <SVPERIODICITY>{period}</SVPERIODICITY>
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
 
     response = requests.post(
         TALLY_URL,
-        data=xml_data,
-        headers={
-            "Content-Type": "application/xml"
-        }
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
     )
 
     response.raise_for_status()
 
-    return parse_xml(response.text)
-
-
-def parse_xml(xml_response):
-
-    root = ET.fromstring(xml_response)
+    root = ET.fromstring(response.text)
 
     rows = []
-
     children = list(root)
 
     for i in range(0, len(children), 2):
@@ -180,143 +144,1487 @@ def parse_xml(xml_response):
             if children[i].tag != "DSPPERIOD":
                 continue
 
-            period = children[i].text.strip()
+            rows.append(
+                {
+                    "Period": children[i].text.strip()
+                    if children[i].text else "",
 
-            acc_info = children[i + 1]
+                    "DebitAmount": children[i + 1].findtext(
+                        "./DSPDRAMT/DSPDRAMTA",
+                        default=""
+                    ),
 
-            debit = acc_info.findtext(
-                "./DSPDRAMT/DSPDRAMTA",
-                default=""
+                    "CreditAmount": children[i + 1].findtext(
+                        "./DSPCRAMT/DSPCRAMTA",
+                        default=""
+                    ),
+
+                    "ClosingAmount": children[i + 1].findtext(
+                        "./DSPCLAMT/DSPCLAMTA",
+                        default=""
+                    )
+                }
             )
-
-            credit = acc_info.findtext(
-                "./DSPCRAMT/DSPCRAMTA",
-                default=""
-            )
-
-            closing = acc_info.findtext(
-                "./DSPCLAMT/DSPCLAMTA",
-                default=""
-            )
-
-            rows.append({
-                "Period": period,
-                "DebitAmount": debit,
-                "CreditAmount": credit,
-                "ClosingAmount": closing
-            })
 
         except Exception:
             continue
 
-    return rows
+    df = pd.DataFrame(rows)
 
-
-
-
-
-def get_Outstanding_report(
-    ledger_name,
-    from_date,
-    to_date,
-
-):
-
-    return f"""
-    <ENVELOPE>
-
-        <HEADER>
-            <TALLYREQUEST>Export Data</TALLYREQUEST>
-        </HEADER>
-
-        <BODY>
-
-            <EXPORTDATA>
-
-                <REQUESTDESC>
-
-                    <REPORTNAME>Ledger Outstandings</REPORTNAME>
-
-                    <STATICVARIABLES>
-
-                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-
-                        <SVFROMDATE>{from_date}</SVFROMDATE>
-
-                        <SVTODATE>{to_date}</SVTODATE>
-
-                        <LEDGERNAME>{ledger_name}</LEDGERNAME>
-
-                       
-
-                    </STATICVARIABLES>
-
-                </REQUESTDESC>
-
-            </EXPORTDATA>
-
-        </BODY>
-
-    </ENVELOPE>
-    """
+    return (
+        save_to_database(df, file_name)
+        if file_name
+        else rows
+    )
 
 def fetch_Outstanding_data(
     ledger_name,
     from_date,
     to_date,
-
+    file_name=None
 ):
 
-    xml_data = get_Outstanding_report(
-        ledger_name,
-        from_date,
-        to_date,
-
-    )
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Ledger Outstandings</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                        <LEDGERNAME>{ledger_name}</LEDGERNAME>
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
 
     response = requests.post(
         TALLY_URL,
-        data=xml_data,
-        headers={
-            "Content-Type": "application/xml"
-        }
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
     )
 
-    response.raise_for_status()
+    print("Ledger:", ledger_name)
+    print("Status:", response.status_code)
+    print("Response:")
+    print(response.text)
 
-    return parse_outstanding_report(response.text)
+    if not response.text.strip():
+        return []
 
-def parse_outstanding_report(response):
-    root = ET.fromstring(response)
-    records = []
+    try:
+        root = ET.fromstring(response.text)
 
-    # Get all BILLFIXED nodes
+    except ET.ParseError:
+        return []
+
+    rows = []
+
     bill_fixed_list = root.findall(".//BILLFIXED")
-
-    # Get parallel fields
     bill_ops = root.findall(".//BILLOP")
     bill_cls = root.findall(".//BILLCL")
     bill_dues = root.findall(".//BILLDUE")
     bill_overdues = root.findall(".//BILLOVERDUE")
 
-    # Loop through all bills
     for i, bill in enumerate(bill_fixed_list):
 
-        bill_date = bill.findtext("BILLDATE", "")
-        bill_ref = bill.findtext("BILLREF", "")
+        rows.append(
+            {
+                "Bill Date": bill.findtext("BILLDATE", ""),
+                "Bill Ref": bill.findtext("BILLREF", ""),
+                "Opening Amount": bill_ops[i].text if i < len(bill_ops) else "",
+                "Closing Amount": bill_cls[i].text if i < len(bill_cls) else "",
+                "Due Date": bill_dues[i].text if i < len(bill_dues) else "",
+                "Overdue Days": bill_overdues[i].text if i < len(bill_overdues) else "",
+            }
+        )
 
-        bill_op = bill_ops[i].text if i < len(bill_ops) else ""
-        bill_cl = bill_cls[i].text if i < len(bill_cls) else ""
-        bill_due = bill_dues[i].text if i < len(bill_dues) else ""
-        overdue_days = bill_overdues[i].text if i < len(bill_overdues) else ""
+    df = pd.DataFrame(rows)
 
-        records.append({
-            "Bill Date": bill_date,
-            "Bill Ref": bill_ref,
-            "Opening Amount": bill_op,
-            "Closing Amount": bill_cl,
-            "Due Date": bill_due,
-            "Overdue Days": overdue_days
+    return (
+        save_to_database(df, file_name)
+        if file_name
+        else rows
+    )
+
+
+# ─────────────────────────────────────────
+# MULTI TRANSACTION
+# ─────────────────────────────────────────
+
+def multi_transaction(report_name, from_date, to_date, period,file_name=None):
+
+    xml_payload = f"""
+    <ENVELOPE>
+      <HEADER>
+        <TALLYREQUEST>Export Data</TALLYREQUEST>
+      </HEADER>
+      <BODY>
+        <EXPORTDATA>
+          <REQUESTDESC>
+            <REPORTNAME>{report_name}</REPORTNAME>
+            <STATICVARIABLES>
+              <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+              <SVFROMDATE>{from_date}</SVFROMDATE>
+              <SVTODATE>{to_date}</SVTODATE>
+              <SVPERIODICITY>{period}</SVPERIODICITY>
+            </STATICVARIABLES>
+          </REQUESTDESC>
+        </EXPORTDATA>
+      </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(
+        TALLY_URL, data=xml_payload, headers={"Content-Type": "application/xml"}
+    )
+
+    if response.status_code != 200:
+        return []
+
+    root = ET.fromstring(response.content)
+    data = []
+
+    periods = root.findall(".//DSPPERIOD")
+    acc_infos = root.findall(".//DSPACCINFO")
+
+    for period_tag, acc in zip(periods, acc_infos):
+        period_value = period_tag.text.strip() if period_tag.text else ""
+        debit = acc.findtext(".//DSPDRAMTA")
+        credit = acc.findtext(".//DSPCRAMTA")
+        closing = acc.findtext(".//DSPCLAMTA")
+
+        data.append(
+            {
+                "Period": period_value,
+                "Debit Amount": float(debit) if debit else 0.0,
+                "Credit Amount": float(credit) if credit else 0.0,
+                "Closing Amount": float(closing) if closing else 0.0,
+            }
+        )
+
+    return save_to_database(pd.DataFrame(data), file_name) if file_name else data
+
+
+
+
+
+# ─────────────────────────────────────────
+# PROFIT AND LOSS
+# ─────────────────────────────────────────
+
+def profit_and_loss_report(from_date, to_date,file_name=None):
+    xml_request = f"""<ENVELOPE>
+    <HEADER>
+        <TALLYREQUEST>Export Data</TALLYREQUEST>
+    </HEADER>
+    <BODY>
+        <EXPORTDATA>
+            <REQUESTDESC>
+                <REPORTNAME>Profit and Loss</REPORTNAME>
+                <STATICVARIABLES>
+                    <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                    <SVFROMDATE>{from_date}</SVFROMDATE>
+                    <SVTODATE>{to_date}</SVTODATE>
+                    <EXPLODEFLAG>Yes</EXPLODEFLAG>
+                </STATICVARIABLES>
+            </REQUESTDESC>
+        </EXPORTDATA>
+    </BODY>
+</ENVELOPE>"""
+
+    response = requests.post(TALLY_URL, data=xml_request)
+
+    if response.status_code != 200:
+        raise Exception(f"Tally returned {response.status_code}")
+
+    if "<html" in response.text.lower():
+        raise Exception("Tally returned HTML instead of XML")
+
+    root = ET.fromstring(response.text)
+    rows = []
+    current_name = None
+
+    for elem in root.iter():
+        if elem.tag == "BSNAME":
+            name_elem = elem.find(".//DSPDISPNAME")
+            if name_elem is not None and name_elem.text:
+                current_name = name_elem.text.strip()
+
+        elif elem.tag == "BSAMT" and current_name:
+            sub_amt = elem.findtext("BSSUBAMT")
+            main_amt = elem.findtext("BSMAINAMT")
+            amount = sub_amt if sub_amt and sub_amt.strip() else main_amt
+            rows.append({"Name": current_name, "Amount": amount if amount else "0"})
+            current_name = None
+
+    df = pd.DataFrame(rows)
+    return save_to_database(df, file_name) if file_name else rows
+
+
+# ─────────────────────────────────────────
+# STOCK ANALYSER
+# ─────────────────────────────────────────
+
+def Stock_analzer(date_from, date_to, StockItemName,file_name=None):
+
+    def clean_xml(xml_text):
+        xml_text = re.sub(r"&#\d+;", "", xml_text)
+        xml_text = re.sub(r"[^\x09\x0A\x0D\x20-\x7F]+", "", xml_text)
+        return xml_text
+
+    request_xml = f"""
+    <ENVELOPE>
+      <HEADER>
+        <TALLYREQUEST>Export Data</TALLYREQUEST>
+      </HEADER>
+      <BODY>
+        <EXPORTDATA>
+          <REQUESTDESC>
+            <REPORTNAME>STOCKVOUCHERS</REPORTNAME>
+            <STATICVARIABLES>
+              <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+              <SVFROMDATE>{date_from}</SVFROMDATE>
+              <SVTODATE>{date_to}</SVTODATE>
+              <STOCKITEMNAME>{StockItemName}</STOCKITEMNAME>
+            
+            </STATICVARIABLES>
+          </REQUESTDESC>
+        </EXPORTDATA>
+      </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(TALLY_URL, data=request_xml)
+
+    if response.status_code != 200:
+        return []
+
+    try:
+        root = ET.fromstring(clean_xml(response.text))
+    except Exception as e:
+        print("Stock XML Parse Error:", e)
+        return []
+
+    stock_rows = []
+    current = {}
+
+    for elem in root.iter():
+        tag = elem.tag
+        text = (elem.text or "").strip()
+
+        if tag == "DSPVCHDATE":
+            if current:
+                stock_rows.append(current)
+            current = {"Date": text}
+
+        elif tag == "DSPVCHITEMACCOUNT":
+            current["Party"] = text
+
+        elif tag == "DSPVCHTYPE":
+            current["Type"] = text
+
+        elif tag == "DSPINBLOCK":
+            current["InQty"] = elem.findtext("DSPVCHINQTY", default="")
+            current["InAmt"] = elem.findtext("DSPVCHINAMT", default="")
+
+        elif tag == "DSPOUTBLOCK":
+            current["OutQty"] = elem.findtext("DSPVCHOUTQTY", default="")
+            current["OutAmt"] = elem.findtext("DSPVCHNETTOUTAMT", default="")
+
+        elif tag == "DSPCLBLOCK":
+            current["ClosingQty"] = elem.findtext("DSPVCHCLQTY", default="")
+            current["ClosingAmt"] = elem.findtext("DSPVCHCLAMT", default="")
+
+        elif tag == "STKVCHTRACKQTY":
+            current["TrackQty"] = text
+
+    if current:
+        stock_rows.append(current)
+
+  
+    df = pd.DataFrame(stock_rows)
+    return save_to_database(df, file_name) if file_name else stock_rows
+
+
+# ─────────────────────────────────────────
+# STOCK GROUP SUMMARY
+# ─────────────────────────────────────────
+
+def _clean_qty(q):
+    if not q:
+        return ""
+    return re.sub(r"[^\d.-]", "", q)
+
+
+def _clean_float(val):
+    if not val:
+        return ""
+    try:
+        return float(val)
+    except Exception:
+        return ""
+
+def Stock_Group_Summary(from_date, to_date, file_name=None):
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Stock Group Summary</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(
+        TALLY_URL,
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
+    )
+
+    if response.status_code != 200:
+        return []
+
+    try:
+        root = ET.fromstring(response.text)
+    except ET.ParseError:
+        return []
+
+    rows = []
+
+    names = root.findall(".//DSPACCNAME")
+    stocks = root.findall(".//DSPSTKINFO")
+
+    for name_elem, stock_elem in zip(names, stocks):
+
+        item_name = name_elem.findtext(
+            "DSPDISPNAME",
+            default=""
+        ).strip()
+
+        stk = stock_elem.find(".//DSPSTKCL")
+
+        if stk is not None:
+            qty = _clean_qty(
+                stk.findtext("DSPCLQTY", "")
+            )
+
+            rate = _clean_float(
+                stk.findtext("DSPCLRATE", "")
+            )
+
+            amount = _clean_float(
+                stk.findtext("DSPCLAMTA", "")
+            )
+
+        else:
+            qty = ""
+            rate = ""
+            amount = ""
+
+        rows.append(
+            {
+                "Item Name": item_name,
+                "Quantity": qty,
+                "Rate": rate,
+                "Amount": amount
+            }
+        )
+
+    df = pd.DataFrame(rows)
+
+    if file_name:
+        return save_to_database(df, file_name)
+
+    return rows
+
+# ─────────────────────────────────────────
+# MOVEMENT ANALYSIS
+# ─────────────────────────────────────────
+
+def _extract_number(text):
+    if text and text.strip():
+        match = re.findall(r"-?\d+\.?\d*", text)
+        if match:
+            return float(match[0])
+    return 0.0
+
+def Movenment_analaysis(
+    from_date,
+    to_date,
+    file_name=None
+):
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Movement Analysis</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(
+        TALLY_URL,
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
+    )
+
+    if response.status_code != 200:
+        return []
+
+    if not response.text.strip():
+        return []
+
+    try:
+        root = ET.fromstring(response.text)
+    except ET.ParseError:
+        print("Invalid XML returned by Tally")
+        print(response.text)
+        return []
+
+    rows = []
+    current_item = None
+
+    for elem in root.iter():
+
+        if elem.tag == "DSPACCNAME":
+
+            name_tag = elem.find("DSPDISPNAME")
+
+            if (
+                name_tag is not None
+                and name_tag.text
+            ):
+                current_item = name_tag.text.strip()
+
+        elif elem.tag == "STKANALINFO":
+
+            stkmin = elem.find("STKMIN")
+            stkout = elem.find("STKMOUT")
+
+            rows.append(
+                {
+                    "Item": current_item,
+
+                    "In Qty": _extract_number(
+                        stkmin.findtext("STKINQTY")
+                        if stkmin is not None
+                        else None
+                    ),
+
+                    "In Value": _extract_number(
+                        stkmin.findtext("STKINVALUE")
+                        if stkmin is not None
+                        else None
+                    ),
+
+                    "Out Qty": _extract_number(
+                        stkout.findtext("STKOUTQTY")
+                        if stkout is not None
+                        else None
+                    ),
+
+                    "Out Value": _extract_number(
+                        stkout.findtext("STKOUTVALUE")
+                        if stkout is not None
+                        else None
+                    ),
+                }
+            )
+
+    df = pd.DataFrame(rows)
+
+    return (
+        save_to_database(df, file_name)
+        if file_name
+        else rows
+    )
+
+
+
+import re
+
+def clean_qty(q):
+    if not q:
+        return 0.0
+
+    match = re.search(r"[-+]?\d*\.?\d+", q)
+
+    if match:
+        return float(match.group())
+
+    return 0.0
+
+
+def clean_float(x):
+    try:
+        return float(x)
+    except:
+        return 0.0
+
+def Stock_Category_Summary(from_date, to_date, file_name=None):
+
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Stock Category Summary</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                        
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(
+        TALLY_URL,
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
+    )
+
+    if response.status_code != 200:
+        return []
+
+    root = ET.fromstring(response.text)
+
+    data_map = {}
+    current_item = ""
+
+    for elem in root.iter():
+
+        if elem.tag == "DSPDISPNAME":
+            current_item = elem.text.strip() if elem.text else ""
+
+        elif elem.tag == "DSPSTKCL":
+
+            qty = clean_qty(elem.findtext("DSPCLQTY", ""))
+            rate = clean_float(elem.findtext("DSPCLRATE", ""))
+            amount = clean_float(elem.findtext("DSPCLAMTA", ""))
+
+            if qty == 0 and rate == 0 and amount == 0:
+                continue
+
+            if current_item not in data_map:
+                data_map[current_item] = {
+                    "Quantity": 0.0,
+                    "Rate": rate,
+                    "Amount": 0.0
+                }
+
+            data_map[current_item]["Quantity"] += qty
+            data_map[current_item]["Amount"] += amount
+            data_map[current_item]["Rate"] = rate
+
+    rows = []
+
+    for item, values in data_map.items():
+        rows.append({
+            "Item Name": item,
+            "Quantity": values["Quantity"],
+            "Rate": values["Rate"],
+            "Amount": values["Amount"]
         })
 
-    return records
+    df = pd.DataFrame(rows)
+
+    return save_to_database(df.head(100), file_name,len(df)) if file_name else rows
+
+
+
+
+def Ratio_Analysis(from_date, to_date, file_name=None):
+
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Ratio Analysis</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(
+        TALLY_URL,
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
+    )
+
+    if response.status_code != 200:
+        return []
+
+    root = ET.fromstring(response.text)
+
+    def clean_value(value):
+        if not value:
+            return None, None, None
+
+        value = value.strip()
+
+        if "Dr" in value:
+            nature = "Debit"
+        elif "Cr" in value:
+            nature = "Credit"
+        else:
+            nature = "Neutral"
+
+        numeric = re.sub(r"[^\d.\-]", "", value.replace(",", ""))
+
+        try:
+            numeric = float(numeric)
+        except:
+            numeric = None
+
+        return numeric, nature, value
+
+    rows = []
+
+    names = root.findall(".//RATIONAME")
+    values = root.findall(".//RATIOVALUE")
+
+    for name, value in zip(names, values):
+
+        ratio_name = name.text.strip() if name.text else ""
+        ratio_value = value.text.strip() if value.text else ""
+
+        numeric, nature, original = clean_value(ratio_value)
+
+        rows.append(
+            {
+                "Name": ratio_name,
+                "Original Value": original,
+                "Numeric Value": numeric,
+                "Type": nature,
+            }
+        )
+
+    df = pd.DataFrame(rows)
+
+    return save_to_database(df, file_name) if file_name else rows
+
+
+
+
+def Negative_Ledgers_Report(from_date, to_date, file_name=None):
+
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Negative Ledgers</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(
+        TALLY_URL,
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
+    )
+
+    if response.status_code != 200:
+        return []
+
+    root = ET.fromstring(response.text)
+
+    rows = []
+    ledger_name = None
+
+    for elem in root:
+
+        if elem.tag == "DSPACCNAME":
+            ledger_name = elem.findtext("DSPDISPNAME", "").strip()
+
+        elif elem.tag == "DSPACCINFO":
+
+            debit = elem.findtext(
+                "DSPCLDRAMT/DSPCLDRAMTA",
+                default=""
+            )
+
+            credit = elem.findtext(
+                "DSPCLCRAMT/DSPCLCRAMTA",
+                default=""
+            )
+
+            rows.append(
+                {
+                    "Ledger Name": ledger_name,
+                    "Debit": float(debit) if debit else 0.0,
+                    "Credit": float(credit) if credit else 0.0,
+                }
+            )
+
+    df = pd.DataFrame(rows)
+
+    return save_to_database(df, file_name) if file_name else rows
+
+
+
+
+def Order_Outstandings_Report(from_date, to_date, file_name=None):
+
+    xml_request = f"""
+    <ENVELOPE>
+      <HEADER>
+        <TALLYREQUEST>Export Data</TALLYREQUEST>
+      </HEADER>
+
+      <BODY>
+        <EXPORTDATA>
+          <REQUESTDESC>
+
+            <REPORTNAME>Order Outstandings</REPORTNAME>
+
+            <STATICVARIABLES>
+              <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+              <SVFROMDATE>{from_date}</SVFROMDATE>
+              <SVTODATE>{to_date}</SVTODATE>
+            </STATICVARIABLES>
+
+          </REQUESTDESC>
+        </EXPORTDATA>
+      </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(
+        TALLY_URL,
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
+    )
+
+    if response.status_code != 200:
+        return []
+
+    root = ET.fromstring(response.text)
+
+    rows = []
+
+    names = root.findall(".//DSPACCNAME")
+    stocks = root.findall(".//ORDERSTKINFO")
+
+    for name_tag, stock_tag in zip(names, stocks):
+
+        item_name = name_tag.findtext(
+            "DSPDISPNAME",
+            default=""
+        ).strip()
+
+        qty = stock_tag.findtext(
+            ".//ORDERCLQTY",
+            default=""
+        )
+
+        rate = stock_tag.findtext(
+            ".//ORDERCLRATE",
+            default=""
+        )
+
+        amount = stock_tag.findtext(
+            ".//ORDERCLAMTA",
+            default=""
+        )
+
+        rows.append(
+            {
+                "Item Name": item_name,
+                "Qty": qty,
+                "Rate": rate,
+                "Amount": amount,
+            }
+        )
+
+    df = pd.DataFrame(rows)
+
+    return save_to_database(df, file_name) if file_name else rows
+
+def Overdue_Payables_Report(
+    from_date,
+    to_date,
+    file_name=None
+):
+
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Overdue Payables</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(
+        TALLY_URL,
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
+    )
+
+    if response.status_code != 200:
+        return []
+
+    root = ET.fromstring(response.text)
+
+    rows = []
+    current_invoice = {}
+    items = []
+
+    for elem in root.iter():
+
+        tag = elem.tag.upper()
+        value = elem.text.strip() if elem.text else ""
+
+        if tag == "BILLDATE":
+            current_invoice["Date"] = value
+
+        elif tag == "BILLREF":
+            current_invoice["Reference"] = value
+
+        elif tag == "BILLPARTY":
+            current_invoice["Party"] = value
+
+        elif tag == "BILLVCHNUMBER":
+            current_invoice["Voucher No"] = value
+
+        elif tag == "BILLVCHTYPE":
+            current_invoice["Voucher Type"] = value
+
+        elif tag == "BILLVCHAMOUNT":
+            current_invoice["Amount"] = value
+
+        elif tag == "BILLDUE":
+            current_invoice["Due Date"] = value
+
+        elif tag == "BILLOVERDUE":
+            current_invoice["Overdue Days"] = value
+
+        elif tag == "BILLCL":
+            current_invoice["Closing Balance"] = value
+
+        elif tag == "BILLINVITEM":
+            items.append({
+                "Item": value
+            })
+
+        elif tag == "BILLINVRATE":
+            if items:
+                items[-1]["Rate"] = value
+
+        elif tag == "BILLINVQTY":
+            if items:
+                items[-1]["Qty"] = value
+
+        elif tag == "BILLFIXED":
+
+            if current_invoice and items:
+
+                for item in items:
+                    rows.append({
+                        **current_invoice,
+                        **item
+                    })
+
+            elif current_invoice:
+                rows.append(current_invoice)
+
+            current_invoice = {}
+            items = []
+
+    # Final Flush
+    if current_invoice:
+
+        if items:
+
+            for item in items:
+                rows.append({
+                    **current_invoice,
+                    **item
+                })
+
+        else:
+            rows.append(current_invoice)
+
+    if not rows:
+        return []
+
+    df = pd.DataFrame(rows)
+
+    # -----------------------------
+    # DATE FILTERING
+    # -----------------------------
+    if "Date" in df.columns:
+
+        # Example: 8-Dec-10
+        df["Date"] = pd.to_datetime(
+            df["Date"],
+            format="%d-%b-%y",
+            errors="coerce"
+        )
+
+        from_dt = pd.to_datetime(
+            from_date,
+            format="%Y%m%d",
+            errors="coerce"
+        )
+
+        to_dt = pd.to_datetime(
+            to_date,
+            format="%Y%m%d",
+            errors="coerce"
+        )
+
+        df = df[
+            (df["Date"] >= from_dt)
+            & (df["Date"] <= to_dt)
+        ]
+
+        # Convert back for API output
+        if not df.empty:
+            df["Date"] = df["Date"].dt.strftime("%d-%b-%y")
+
+    # -----------------------------
+    # CLEAN NUMERIC COLUMNS
+    # -----------------------------
+    if "Amount" in df.columns:
+        df["Amount"] = pd.to_numeric(
+            df["Amount"],
+            errors="coerce"
+        )
+
+    if "Overdue Days" in df.columns:
+        df["Overdue Days"] = pd.to_numeric(
+            df["Overdue Days"],
+            errors="coerce"
+        )
+
+    # Replace NaN with None for FastAPI JSON
+    df = df.astype(object)
+    df = df.where(pd.notnull(df), None)
+
+    print(f"Rows After Filter: {len(df)}")
+
+    if file_name:
+        return save_to_database(df, file_name)
+
+    return df.to_dict(orient="records")
+
+
+
+
+def Trial_Balance_Report(
+    from_date,
+    to_date,
+    is_ledgerwise="NO",
+    file_name=None
+):
+
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Trial Balance</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                        <ISLEDGERWISE>{is_ledgerwise}</ISLEDGERWISE>
+                        
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(
+        TALLY_URL,
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
+    )
+
+    if response.status_code != 200:
+        return []
+
+    root = ET.fromstring(response.text)
+
+    rows = []
+    current_name = None
+
+    for elem in root.iter():
+
+        if elem.tag == "DSPDISPNAME":
+            current_name = (
+                elem.text.strip()
+                if elem.text else ""
+            )
+
+        elif elem.tag == "DSPACCINFO":
+
+            dr_elem = elem.find(".//DSPCLDRAMTA")
+            cr_elem = elem.find(".//DSPCLCRAMTA")
+
+            debit = (
+                dr_elem.text.strip()
+                if dr_elem is not None and dr_elem.text
+                else "0"
+            )
+
+            credit = (
+                cr_elem.text.strip()
+                if cr_elem is not None and cr_elem.text
+                else "0"
+            )
+
+            rows.append(
+                {
+                    "Account Name": current_name,
+                    "Debit": debit,
+                    "Credit": credit,
+                }
+            )
+
+    df = pd.DataFrame(rows)
+
+    if "Debit" in df.columns:
+        df["Debit"] = pd.to_numeric(
+            df["Debit"],
+            errors="coerce"
+        ).fillna(0)
+
+    if "Credit" in df.columns:
+        df["Credit"] = pd.to_numeric(
+            df["Credit"],
+            errors="coerce"
+        ).fillna(0)
+
+    return (
+        save_to_database(df, file_name)
+        if file_name
+        else df.to_dict(orient="records")
+    )
+
+
+
+def Balance_Sheet_Report(
+    from_date,
+    to_date,
+    file_name=None
+):
+
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Balance Sheet</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                     
+                        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(
+        TALLY_URL,
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
+    )
+
+    if response.status_code != 200:
+        return []
+
+    root = ET.fromstring(response.text)
+
+    rows = []
+
+    bsnames = root.findall(".//BSNAME")
+    bsamts = root.findall(".//BSAMT")
+
+    for name_tag, amt_tag in zip(bsnames, bsamts):
+
+        name_tag_val = name_tag.find(".//DSPDISPNAME")
+
+        ledger_name = (
+            name_tag_val.text.strip()
+            if name_tag_val is not None and name_tag_val.text
+            else ""
+        )
+
+        main_amt = amt_tag.find("BSMAINAMT")
+        sub_amt = amt_tag.find("BSSUBAMT")
+
+        amount = ""
+
+        if (
+            main_amt is not None
+            and main_amt.text
+            and main_amt.text.strip()
+        ):
+            amount = main_amt.text.strip()
+
+        elif (
+            sub_amt is not None
+            and sub_amt.text
+            and sub_amt.text.strip()
+        ):
+            amount = sub_amt.text.strip()
+
+        if ledger_name or amount:
+
+            rows.append(
+                {
+                    "Ledger Name": ledger_name,
+                    "Amount": amount
+                }
+            )
+
+    df = pd.DataFrame(rows)
+
+    if "Amount" in df.columns:
+        df["Amount"] = pd.to_numeric(
+            df["Amount"],
+            errors="coerce"
+        ).fillna(0)
+
+    return (
+        save_to_database(df, file_name)
+        if file_name
+        else df.to_dict(orient="records")
+    )
+
+
+
+def Cost_Center_Summary_Report(
+    from_date,
+    to_date,
+    file_name=None
+):
+
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Cost Centre Summary</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(
+        TALLY_URL,
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
+    )
+
+    if response.status_code != 200:
+        return []
+
+    root = ET.fromstring(response.text)
+
+    rows = []
+
+    names = root.findall(".//DSPACCNAME")
+    infos = root.findall(".//DSPACCINFO")
+
+    for name_node, info_node in zip(names, infos):
+
+        name = name_node.findtext(
+            "DSPDISPNAME",
+            default=""
+        ).strip()
+
+        dr = info_node.findtext(
+            "./DSPDRAMT/DSPDRAMTA",
+            default="0"
+        )
+
+        cr = info_node.findtext(
+            "./DSPCRAMT/DSPCRAMTA",
+            default="0"
+        )
+
+        cl = info_node.findtext(
+            "./DSPCLAMT/DSPCLAMTA",
+            default="0"
+        )
+
+        rows.append(
+            {
+                "Cost Center": name,
+                "Debit": float(dr) if dr else 0,
+                "Credit": float(cr) if cr else 0,
+                "Closing": float(cl) if cl else 0
+            }
+        )
+
+    df = pd.DataFrame(rows)
+
+    return (
+        save_to_database(df, file_name)
+        if file_name
+        else df.to_dict(orient="records")
+    )
+
+
+def Godown_Summary_Report(
+    from_date,
+    to_date,
+    file_name=None
+):
+
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Godown Summary</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(
+        TALLY_URL,
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
+    )
+
+    if response.status_code != 200:
+        return []
+
+    root = ET.fromstring(response.text)
+
+    rows = []
+    current_name = None
+
+    for elem in root.iter():
+
+        if elem.tag == "DSPDISPNAME":
+            current_name = (
+                elem.text.strip()
+                if elem.text else ""
+            )
+
+        elif elem.tag == "DSPSTKCL":
+
+            qty = elem.findtext(
+                "DSPCLQTY",
+                default=""
+            )
+
+            rate = elem.findtext(
+                "DSPCLRATE",
+                default=""
+            )
+
+            amount = elem.findtext(
+                "DSPCLAMTA",
+                default=""
+            )
+
+            rows.append(
+                {
+                    "Name": current_name,
+                    "Quantity": qty,
+                    "Rate": rate,
+                    "Amount": amount
+                }
+            )
+
+    df = pd.DataFrame(rows)
+
+    return (
+        save_to_database(df, file_name)
+        if file_name
+        else df.to_dict(orient="records")
+    )
+def Statistics_Report(
+    from_date,
+    to_date,
+    file_name=None
+):
+
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Statistics</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
+
+    response = requests.post(
+        TALLY_URL,
+        data=xml_request,
+        headers={"Content-Type": "application/xml"}
+    )
+
+    if response.status_code != 200:
+        return []
+
+    root = ET.fromstring(response.text)
+
+    rows = []
+
+    stat_names = root.findall(".//STATNAME")
+    stat_values = root.findall(".//STATVALUE")
+
+    for name_tag, value_tag in zip(stat_names, stat_values):
+
+        name = (
+            name_tag.text.strip()
+            if name_tag is not None and name_tag.text
+            else ""
+        )
+
+        direct = value_tag.findtext(
+            "STATDIRECT",
+            default="0"
+        )
+
+        cancelled = value_tag.findtext(
+            "STATCANCELLED",
+            default=""
+        )
+
+        rows.append(
+            {
+                "Name": name,
+                "Count": direct,
+                "Cancelled": cancelled
+            }
+        )
+
+    df = pd.DataFrame(rows)
+
+    if "Count" in df.columns:
+        df["Count"] = pd.to_numeric(
+            df["Count"],
+            errors="coerce"
+        ).fillna(0)
+
+    return (
+        save_to_database(df, file_name)
+        if file_name
+        else df.to_dict(orient="records")
+    )
