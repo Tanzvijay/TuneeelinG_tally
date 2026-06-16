@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-
+from fastapi import Depends
 from repo import (
     Balance_Sheet_Report,
     Cost_Center_Summary_Report,
@@ -20,7 +20,8 @@ from repo import (
     Order_Outstandings_Report,
     Overdue_Payables_Report,
     Trial_Balance_Report,
-    Stock_Purchase_Report
+    Stock_Purchase_Report,
+    verify_api_key
    
 
     
@@ -31,12 +32,12 @@ router = APIRouter()
 
 
 @router.get("/tables")
-def list_tables():
+def list_tables(api_key: str = Depends(verify_api_key)):
     return list_database_tables_agent()
 
 
 @router.get("/tables/{table_name}/data")
-def get_table_data_endpoint(table_name: str, limit: int = 100):
+def get_table_data_endpoint(table_name: str, limit: int = 100,api_key: str = Depends(verify_api_key)):
     return get_table_data(table_name=table_name, limit=limit)
 
 
@@ -47,6 +48,7 @@ def monthly_provision_endpoint(
     to_date: str,
     period: str,
     file_name: str = None,
+
 ):
     data = fetch_monthly_provision_data(
         ledger_name=ledger_name,
