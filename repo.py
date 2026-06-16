@@ -5,10 +5,13 @@ import pandas as pd
 
 import requests
 from psycopg2 import sql
+import calendar
 from sqlalchemy import create_engine, text
 
 
-TALLY_URL = "http://168.144.119.48/"  # Update with your Tally server URL
+import re
+
+  # Update with your Tally server URL
 
 
 
@@ -21,7 +24,7 @@ DATABASE_URL = (
     f"{os.getenv('DB_PORT')}/"
     f"{os.getenv('DB_NAME')}"
 )
-
+TALLY_URL=os.getenv('TALLY_URL')
 engine = create_engine(DATABASE_URL)
 
 
@@ -170,12 +173,30 @@ def fetch_monthly_provision_data(
             continue
 
     df = pd.DataFrame(rows)
+    cols = ["DebitAmount", "CreditAmount", "ClosingAmount"]
+    fy_start = pd.to_datetime(from_date, format="%Y%m%d")
+    
+
+    df[["From Date", "To Date"]] = df["Period"].apply(lambda x: pd.Series(get_period_dates(x, fy_start)))
+
+    date_cols = ["From Date", "To Date"]
+    df[date_cols] = df[date_cols].apply(pd.to_datetime, errors="coerce")
+
+    df[cols] = (
+    df[cols]
+    .apply(pd.to_numeric, errors="coerce")
+    .fillna(0.0)
+    .astype(float)
+
+    
+)
+
 
     return (
-        save_to_database(df, file_name)
-        if file_name
-        else rows
-    )
+    save_to_database(df, file_name)
+    if file_name
+    else df.to_dict(orient="records")
+)
 
 def fetch_Outstanding_data(
     ledger_name,
@@ -211,10 +232,7 @@ def fetch_Outstanding_data(
         headers={"Content-Type": "application/xml"}
     )
 
-    print("Ledger:", ledger_name)
-    print("Status:", response.status_code)
-    print("Response:")
-    print(response.text)
+  
 
     if not response.text.strip():
         return []
@@ -247,17 +265,92 @@ def fetch_Outstanding_data(
         )
 
     df = pd.DataFrame(rows)
+    cols = ["Opening Amount", "Closing Amount", "Overdue Days"]
+    date_cols = ["Bill Date", "Due Date"]
+    df[date_cols] = df[date_cols].apply(pd.to_datetime, errors="coerce")
+
+    
+
+    df[cols] = (
+        df[cols]
+        .apply(pd.to_numeric, errors="coerce")
+        .fillna(0.0)
+        .astype(float)
+    )
 
     return (
         save_to_database(df, file_name)
         if file_name
-        else rows
+        else df.to_dict(orient="records")
     )
 
 
-# ─────────────────────────────────────────
-# MULTI TRANSACTION
-# ─────────────────────────────────────────
+def normalize_period(period):
+    period = str(period).strip()
+
+    # Day: 1-Apr
+    if re.match(r"^\d{1,2}-[A-Za-z]{3}$", period):
+        return pd.to_datetime(period + "-2025", format="%d-%b-%Y")
+
+    # Month: April
+    if re.match(r"^[A-Za-z]+$", period):
+        return pd.to_datetime(period + "-2025", format="%B-%Y")
+
+    return period
+
+def get_period_dates(period, financial_year_start):
+    period = str(period).strip()
+
+    # Month: April
+    if re.match(r"^[A-Za-z]+$", period):
+        dt = pd.to_datetime(
+            f"{period}-{financial_year_start.year}",
+            format="%B-%Y"
+        )
+        start_date = dt.replace(day=1)
+        end_date = dt.replace(
+            day=calendar.monthrange(dt.year, dt.month)[1]
+        )
+        return start_date.date(), end_date.date()
+
+    # Day: 1-Apr
+    if re.match(r"^\d{1,2}-[A-Za-z]{3}$", period):
+        dt = pd.to_datetime(
+            f"{period}-{financial_year_start.year}",
+            format="%d-%b-%Y"
+        )
+        return dt.date(), dt.date()
+
+    # Week: 3-Apr to 9-Apr
+    if " to " in period and not re.search(r"\d{4}", period):
+        start_str, end_str = period.split(" to ")
+
+        start_dt = pd.to_datetime(
+            f"{start_str}-{financial_year_start.year}",
+            format="%d-%b-%Y"
+        )
+        end_dt = pd.to_datetime(
+            f"{end_str}-{financial_year_start.year}",
+            format="%d-%b-%Y"
+        )
+
+        return start_dt.date(), end_dt.date()
+
+    # Year range: Apr-2017 to Mar-2018
+    if re.match(r"^[A-Za-z]{3}-\d{4}\s+to\s+[A-Za-z]{3}-\d{4}$", period):
+        start_str, end_str = period.split(" to ")
+
+        start_dt = pd.to_datetime(start_str, format="%b-%Y")
+        end_dt = pd.to_datetime(end_str, format="%b-%Y")
+
+        start_date = start_dt.replace(day=1)
+        end_date = end_dt.replace(
+            day=calendar.monthrange(end_dt.year, end_dt.month)[1]
+        )
+
+        return start_date.date(), end_date.date()
+
+    return None, None
 
 def multi_transaction(report_name, from_date, to_date, period,file_name=None):
 
@@ -309,8 +402,14 @@ def multi_transaction(report_name, from_date, to_date, period,file_name=None):
                 "Closing Amount": float(closing) if closing else 0.0,
             }
         )
+    fy_start = pd.to_datetime(from_date, format="%Y%m%d")
+    df = pd.DataFrame(data)
 
-    return save_to_database(pd.DataFrame(data), file_name) if file_name else data
+    df[["From Date", "To Date"]] = df["Period"].apply(lambda x: pd.Series(get_period_dates(x, fy_start)))
+
+    
+
+    return save_to_database(df, file_name) if file_name else df.to_dict(orient="records")
 
 
 
@@ -366,7 +465,8 @@ def profit_and_loss_report(from_date, to_date,file_name=None):
             current_name = None
 
     df = pd.DataFrame(rows)
-    return save_to_database(df, file_name) if file_name else rows
+    df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0.0)
+    return save_to_database(df, file_name) if file_name else df.to_dict(orient="records")
 
 
 # ─────────────────────────────────────────
@@ -451,7 +551,19 @@ def Stock_analzer(date_from, date_to, StockItemName,file_name=None):
 
   
     df = pd.DataFrame(stock_rows)
-    return save_to_database(df, file_name) if file_name else stock_rows
+
+    cols = [ "InAmt", "OutAmt", "ClosingAmt"]
+
+    df[cols] = (
+        df[cols]
+        .apply(pd.to_numeric, errors="coerce")
+        .fillna(0.0)
+        .astype(float)
+    )
+
+    date_cols = ["Date"]
+    df[date_cols] = df[date_cols].apply(pd.to_datetime, errors="coerce")
+    return save_to_database(df, file_name) if file_name else df.to_dict(orient="records")
 
 
 # ─────────────────────────────────────────
@@ -550,6 +662,8 @@ def Stock_Group_Summary(from_date, to_date, file_name=None):
         )
 
     df = pd.DataFrame(rows)
+    cols = ["Quantity", "Rate", "Amount"]
+    df[cols] = df[cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
     if file_name:
         return save_to_database(df, file_name)
@@ -663,6 +777,9 @@ def Movenment_analaysis(
             )
 
     df = pd.DataFrame(rows)
+    cols = [ "In Value", "Out Value"]
+
+    df[cols] = df[cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
     return (
         save_to_database(df, file_name)
@@ -671,8 +788,6 @@ def Movenment_analaysis(
     )
 
 
-
-import re
 
 def clean_qty(q):
     if not q:
@@ -759,14 +874,16 @@ def Stock_Category_Summary(from_date, to_date, file_name=None):
     for item, values in data_map.items():
         rows.append({
             "Item Name": item,
-            "Quantity": values["Quantity"],
-            "Rate": values["Rate"],
-            "Amount": values["Amount"]
+            "Quantity": float(values["Quantity"]),
+            "Rate": float(values["Rate"]),
+            "Amount": float(values["Amount"])
         })
 
     df = pd.DataFrame(rows)
+    cols = ["Rate", "Amount"]
+    df[cols] = df[cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
-    return save_to_database(df.head(100), file_name,len(df)) if file_name else rows
+    return save_to_database(df.head(100), file_name, len(df)) if file_name else df.to_dict(orient="records")
 
 
 
@@ -849,8 +966,10 @@ def Ratio_Analysis(from_date, to_date, file_name=None):
         )
 
     df = pd.DataFrame(rows)
+    cols = ["Numeric Value"]
+    df[cols] = df[cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)   
 
-    return save_to_database(df, file_name) if file_name else rows
+    return save_to_database(df, file_name) if file_name else df.to_dict(orient="records")
 
 
 
@@ -919,7 +1038,7 @@ def Negative_Ledgers_Report(from_date, to_date, file_name=None):
 
     df = pd.DataFrame(rows)
 
-    return save_to_database(df, file_name) if file_name else rows
+    return save_to_database(df, file_name) if file_name else df.to_dict(orient="records")
 
 
 
@@ -998,13 +1117,17 @@ def Order_Outstandings_Report(from_date, to_date, file_name=None):
         )
 
     df = pd.DataFrame(rows)
+    cols=['Rate','Amount']
+    df[cols] = df[cols].apply(pd.to_numeric, errors="coerce").fillna(0.0) 
 
-    return save_to_database(df, file_name) if file_name else rows
+
+    return save_to_database(df, file_name) if file_name else df.to_dict(orient="records")
 
 def Overdue_Payables_Report(
     from_date,
     to_date,
-    file_name=None
+    file_name=None,
+    ReportName=None
 ):
 
     xml_request = f"""
@@ -1015,7 +1138,7 @@ def Overdue_Payables_Report(
         <BODY>
             <EXPORTDATA>
                 <REQUESTDESC>
-                    <REPORTNAME>Overdue Payables</REPORTNAME>
+                    <REPORTNAME>{ReportName}</REPORTNAME>
                     <STATICVARIABLES>
                         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
                         <SVFROMDATE>{from_date}</SVFROMDATE>
@@ -1159,23 +1282,19 @@ def Overdue_Payables_Report(
     # -----------------------------
     # CLEAN NUMERIC COLUMNS
     # -----------------------------
-    if "Amount" in df.columns:
-        df["Amount"] = pd.to_numeric(
-            df["Amount"],
-            errors="coerce"
-        )
-
-    if "Overdue Days" in df.columns:
-        df["Overdue Days"] = pd.to_numeric(
-            df["Overdue Days"],
-            errors="coerce"
-        )
+    col=['Overdue Days','Closing Balance']
+    df[col]=df[col].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    col=['Date','Due Date"']
+    df=df['']
+  
+    
+    
 
     # Replace NaN with None for FastAPI JSON
     df = df.astype(object)
     df = df.where(pd.notnull(df), None)
 
-    print(f"Rows After Filter: {len(df)}")
+   
 
     if file_name:
         return save_to_database(df, file_name)
@@ -1262,6 +1381,7 @@ def Trial_Balance_Report(
             )
 
     df = pd.DataFrame(rows)
+    
 
     if "Debit" in df.columns:
         df["Debit"] = pd.to_numeric(
@@ -1540,6 +1660,8 @@ def Godown_Summary_Report(
             )
 
     df = pd.DataFrame(rows)
+    col=['Rate','Amount']
+    df[col]=df[col].apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
     return (
         save_to_database(df, file_name)
@@ -1628,3 +1750,109 @@ def Statistics_Report(
         if file_name
         else df.to_dict(orient="records")
     )
+
+
+def Stock_Purchase_Report(
+    stock_item,
+    from_date,
+    to_date,
+    file_name=None
+):
+    xml_request = f"""
+    <ENVELOPE>
+        <HEADER>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+        </HEADER>
+        <BODY>
+            <EXPORTDATA>
+                <REQUESTDESC>
+                    <REPORTNAME>Stock Query</REPORTNAME>
+                    <STATICVARIABLES>
+                        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                        <SVFROMDATE>{from_date}</SVFROMDATE>
+                        <SVTODATE>{to_date}</SVTODATE>
+                        <StockItemName>{stock_item}</StockItemName>
+                    </STATICVARIABLES>
+                </REQUESTDESC>
+            </EXPORTDATA>
+        </BODY>
+    </ENVELOPE>
+    """
+
+    try:
+        response = requests.post(
+            TALLY_URL,
+            data=xml_request,
+            headers={"Content-Type": "application/xml"}
+        )
+
+        response.raise_for_status()
+
+       
+
+        root = ET.fromstring(response.text)
+
+        dates = [e.text or "" for e in root.findall(".//STQSALESDATE")]
+        Party_name = [e.text or "" for e in root.findall(".//STQSALESVCHNO")]
+        qtys = [e.text or "" for e in root.findall(".//STQSALESVCHQTY")]
+        rates = [e.text or "" for e in root.findall(".//STQSALESVCHRATE")]
+        discounts = [e.text or "" for e in root.findall(".//STQSALESVCHDISC")]
+        amounts = [e.text or "" for e in root.findall(".//STQSALESVCHAMOUNT")]
+        godowns = [e.text or "" for e in root.findall(".//STQGODOWNNAME")]
+        batches = [e.text or "" for e in root.findall(".//STQBATCHNAME")]
+        stock_qtys = [e.text or "" for e in root.findall(".//STQGODOWNQTY")]
+
+
+
+        max_rows = max(
+            [
+                len(dates),
+                len(Party_name),
+                len(qtys),
+                len(rates),
+                len(discounts),
+                len(amounts),
+                len(godowns),
+                len(batches),
+                len(stock_qtys)
+            ],
+            default=0
+        )
+
+        rows = []
+
+        for i in range(max_rows):
+            rows.append({
+                "Date": dates[i] if i < len(dates) else "",
+                "Party_name": Party_name[i] if i < len(Party_name) else "",
+                "Qty": qtys[i] if i < len(qtys) else "",
+                "Rate": rates[i] if i < len(rates) else "",
+                "Discount": discounts[i] if i < len(discounts) else "",
+                "Amount": amounts[i] if i < len(amounts) else "",
+                "Godown": godowns[i] if i < len(godowns) else "",
+                "Batch": batches[i] if i < len(batches) else "",
+                "StockQty": stock_qtys[i] if i < len(stock_qtys) else ""
+            })
+
+        df = pd.DataFrame(rows)
+        col=['Amount','Discount','Rate']
+        date_col=['Date']
+        df[date_col] = df[date_col].apply(pd.to_datetime, errors="coerce")
+        df[col] = (
+    df[col]
+    .apply(pd.to_numeric, errors="coerce")
+    .fillna(0.0)
+    .astype(float))
+
+
+        return (
+            save_to_database(df, file_name)
+            if file_name
+            else df.to_dict(orient="records")
+        )
+
+    except requests.exceptions.RequestException as e:
+        return [{"error": f"Connection Error: {str(e)}"}]
+
+    except ET.ParseError as e:
+        return [{"error": f"XML Parse Error: {str(e)}"}]

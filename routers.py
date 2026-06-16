@@ -20,6 +20,7 @@ from repo import (
     Order_Outstandings_Report,
     Overdue_Payables_Report,
     Trial_Balance_Report,
+    Stock_Purchase_Report
    
 
     
@@ -234,11 +235,13 @@ def overdue_payables_endpoint(
     from_date: str,
     to_date: str,
     file_name: str = None,
+    ReportName: str = None
 ):
     data = Overdue_Payables_Report(
         from_date=from_date,
         to_date=to_date,
-        file_name=file_name
+        file_name=file_name,
+        ReportName=ReportName
     )
 
     if isinstance(data, list):
@@ -381,5 +384,29 @@ def statistics_endpoint(
         "status": "success",
         "data": data
     }
+@router.get("/stock-Query")
+def stock_purchase_history(
+    stock_item: str,
+    from_date: str,
+    to_date: str,
+    file_name: str = None
+):
+    data = Stock_Purchase_Report(
+        stock_item=stock_item,
+        from_date=from_date,
+        to_date=to_date,
+        file_name=file_name
+    )
 
+    if isinstance(data, list):
+        return {
+            "status": "success",
+            "count": len(data),
+            "data": data
+        }
+
+    return {
+        "status": "success",
+        "data": data
+    }
 
