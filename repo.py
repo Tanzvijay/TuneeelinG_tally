@@ -10,7 +10,6 @@ from sqlalchemy import create_engine, text
 
 import re
 
-  # Update with your Tally server URL
 from fastapi import Header, HTTPException, Depends
 
 
