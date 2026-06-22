@@ -1293,8 +1293,8 @@ def Overdue_Payables_Report(
     # -----------------------------
     col=['Overdue Days','Closing Balance']
     df[col]=df[col].apply(pd.to_numeric, errors="coerce").fillna(0.0)
-    col=['Date','Due Date"']
-    df=df['']
+    date_col=['Date','Due Date']
+    df[date_col]=df[date_col].apply(pd.to_datetime, errors="coerce")
   
     
     
@@ -1348,6 +1348,8 @@ def Trial_Balance_Report(
         headers={"Content-Type": "application/xml"}
     )
 
+
+
     if response.status_code != 200:
         return []
 
@@ -1355,7 +1357,7 @@ def Trial_Balance_Report(
 
     rows = []
     current_name = None
-
+    
     for elem in root.iter():
 
         if elem.tag == "DSPDISPNAME":
