@@ -16,7 +16,6 @@ from fastapi import Header, HTTPException, Depends
 
 
 
-
 DATABASE_URL = (
     f"postgresql://{os.getenv('DB_USER')}:"
     f"{os.getenv('DB_PASSWORD')}@"
