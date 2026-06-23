@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from fastapi import Depends
+
 from repo import (
     Balance_Sheet_Report,
     Cost_Center_Summary_Report,
@@ -32,12 +32,12 @@ router = APIRouter()
 
 
 @router.get("/tables")
-def list_tables(api_key: str = Depends(verify_api_key)):
+def list_tables():
     return list_database_tables_agent()
 
 
 @router.get("/tables/{table_name}/data")
-def get_table_data_endpoint(table_name: str, limit: int = 100,api_key: str = Depends(verify_api_key)):
+def get_table_data_endpoint(table_name: str, limit: int = 100):
     return get_table_data(table_name=table_name, limit=limit)
 
 
