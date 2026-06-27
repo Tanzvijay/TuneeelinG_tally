@@ -7,11 +7,11 @@ import requests
 from psycopg2 import sql
 import calendar
 from sqlalchemy import create_engine, text
-
+from requests.auth import HTTPBasicAuth
+import requests
 import re
 
 from fastapi import Header, HTTPException, Depends
-
 
 
 
@@ -26,6 +26,9 @@ DATABASE_URL = (
 TALLY_URL=os.getenv('TALLY_URL')
 engine = create_engine(DATABASE_URL)
 
+username=os.getenv('username')
+
+password=os.getenv('password')
 
 def list_database_tables_agent():
     conn = engine.connect()
@@ -129,7 +132,8 @@ def fetch_monthly_provision_data(
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+        auth=HTTPBasicAuth(username, password)
     )
 
     response.raise_for_status()
@@ -228,7 +232,8 @@ def fetch_Outstanding_data(
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+         auth=HTTPBasicAuth(username, password)
     )
 
   
@@ -375,7 +380,7 @@ def multi_transaction(report_name, from_date, to_date, period,file_name=None):
     """
 
     response = requests.post(
-        TALLY_URL, data=xml_payload, headers={"Content-Type": "application/xml"}
+        TALLY_URL, data=xml_payload, headers={"Content-Type": "application/xml"}, auth=HTTPBasicAuth(username, password)
     )
 
     if response.status_code != 200:
@@ -438,7 +443,7 @@ def profit_and_loss_report(from_date, to_date,file_name=None):
     </BODY>
 </ENVELOPE>"""
 
-    response = requests.post(TALLY_URL, data=xml_request)
+    response = requests.post(TALLY_URL, data=xml_request, auth=HTTPBasicAuth(username, password))
 
     if response.status_code != 200:
         raise Exception(f"Tally returned {response.status_code}")
@@ -501,7 +506,7 @@ def Stock_analzer(date_from, date_to, StockItemName,file_name=None):
     </ENVELOPE>
     """
 
-    response = requests.post(TALLY_URL, data=request_xml)
+    response = requests.post(TALLY_URL, data=request_xml, auth=HTTPBasicAuth(username, password))
 
     if response.status_code != 200:
         return []
@@ -583,7 +588,7 @@ def _clean_float(val):
     except Exception:
         return ""
 
-def Stock_Group_Summary(from_date, to_date, file_name=None):
+def Stock_Group_Summary(from_date, to_date, file_name=None,):
     xml_request = f"""
     <ENVELOPE>
         <HEADER>
@@ -608,7 +613,8 @@ def Stock_Group_Summary(from_date, to_date, file_name=None):
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+         auth=HTTPBasicAuth(username, password)
     )
 
     if response.status_code != 200:
@@ -709,7 +715,8 @@ def Movenment_analaysis(
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+         auth=HTTPBasicAuth(username, password)
     )
 
     if response.status_code != 200:
@@ -832,7 +839,8 @@ def Stock_Category_Summary(from_date, to_date, file_name=None):
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+         auth=HTTPBasicAuth(username, password)
     )
 
     if response.status_code != 200:
@@ -913,7 +921,8 @@ def Ratio_Analysis(from_date, to_date, file_name=None):
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+         auth=HTTPBasicAuth(username, password)
     )
 
     if response.status_code != 200:
@@ -999,7 +1008,8 @@ def Negative_Ledgers_Report(from_date, to_date, file_name=None):
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+         auth=HTTPBasicAuth(username, password)
     )
 
     if response.status_code != 200:
@@ -1071,7 +1081,8 @@ def Order_Outstandings_Report(from_date, to_date, file_name=None):
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+        auth=HTTPBasicAuth(username, password)
     )
 
     if response.status_code != 200:
@@ -1153,7 +1164,8 @@ def Overdue_Payables_Report(
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+        auth=HTTPBasicAuth(username, password)
     )
 
     if response.status_code != 200:
@@ -1335,7 +1347,8 @@ def Trial_Balance_Report(
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+        auth=HTTPBasicAuth(username, password)
     )
 
 
@@ -1435,7 +1448,8 @@ def Balance_Sheet_Report(
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+        auth=HTTPBasicAuth(username, password)
     )
 
     if response.status_code != 200:
@@ -1532,7 +1546,8 @@ def Cost_Center_Summary_Report(
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+        auth=HTTPBasicAuth(username, password)
     )
 
     if response.status_code != 200:
@@ -1615,7 +1630,8 @@ def Godown_Summary_Report(
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+        auth=HTTPBasicAuth(username, password)
     )
 
     if response.status_code != 200:
@@ -1699,7 +1715,8 @@ def Statistics_Report(
     response = requests.post(
         TALLY_URL,
         data=xml_request,
-        headers={"Content-Type": "application/xml"}
+        headers={"Content-Type": "application/xml"},
+        auth=HTTPBasicAuth(username, password)
     )
 
     if response.status_code != 200:
@@ -1784,7 +1801,8 @@ def Stock_Purchase_Report(
         response = requests.post(
             TALLY_URL,
             data=xml_request,
-            headers={"Content-Type": "application/xml"}
+            headers={"Content-Type": "application/xml"},
+            auth=HTTPBasicAuth(username, password)
         )
 
         response.raise_for_status()
