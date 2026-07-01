@@ -2,7 +2,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 import pandas as pd
-
+from dotenv import load_dotenv
 import requests
 from psycopg2 import sql
 import calendar
@@ -13,6 +13,7 @@ import re
 
 from fastapi import Header, HTTPException, Depends
 
+load_dotenv()
 
 
 
@@ -890,7 +891,7 @@ def Stock_Category_Summary(from_date, to_date, file_name=None):
     cols = ["Rate", "Amount"]
     df[cols] = df[cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
-    return save_to_database(df.head(100), file_name, len(df)) if file_name else df.to_dict(orient="records")
+    return save_to_database(df, file_name) if file_name else df.to_dict(orient="records")
 
 
 
