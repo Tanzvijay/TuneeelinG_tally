@@ -2,7 +2,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 import pandas as pd
-from dotenv import load_dotenv
+
 import requests
 from psycopg2 import sql
 import calendar
@@ -13,7 +13,7 @@ import re
 
 from fastapi import Header, HTTPException, Depends
 
-load_dotenv()
+
 
 
 
