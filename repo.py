@@ -11,7 +11,6 @@ from requests.auth import HTTPBasicAuth
 import requests
 import re
 
-from fastapi import Header, HTTPException, Depends
 
 
 
@@ -478,97 +477,6 @@ def profit_and_loss_report(from_date, to_date,file_name=None):
 # STOCK ANALYSER
 # ─────────────────────────────────────────
 
-def Stock_analzer(date_from, date_to, StockItemName,file_name=None):
-
-    def clean_xml(xml_text):
-        xml_text = re.sub(r"&#\d+;", "", xml_text)
-        xml_text = re.sub(r"[^\x09\x0A\x0D\x20-\x7F]+", "", xml_text)
-        return xml_text
-
-    request_xml = f"""
-    <ENVELOPE>
-      <HEADER>
-        <TALLYREQUEST>Export Data</TALLYREQUEST>
-      </HEADER>
-      <BODY>
-        <EXPORTDATA>
-          <REQUESTDESC>
-            <REPORTNAME>STOCKVOUCHERS</REPORTNAME>
-            <STATICVARIABLES>
-              <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-              <SVFROMDATE>{date_from}</SVFROMDATE>
-              <SVTODATE>{date_to}</SVTODATE>
-              <STOCKITEMNAME>{StockItemName}</STOCKITEMNAME>
-            
-            </STATICVARIABLES>
-          </REQUESTDESC>
-        </EXPORTDATA>
-      </BODY>
-    </ENVELOPE>
-    """
-
-    response = requests.post(TALLY_URL, data=request_xml, auth=HTTPBasicAuth(username, password))
-
-    if response.status_code != 200:
-        return []
-
-    try:
-        root = ET.fromstring(clean_xml(response.text))
-    except Exception as e:
-        print("Stock XML Parse Error:", e)
-        return []
-
-    stock_rows = []
-    current = {}
-
-    for elem in root.iter():
-        tag = elem.tag
-        text = (elem.text or "").strip()
-
-        if tag == "DSPVCHDATE":
-            if current:
-                stock_rows.append(current)
-            current = {"Date": text}
-
-        elif tag == "DSPVCHITEMACCOUNT":
-            current["Party"] = text
-
-        elif tag == "DSPVCHTYPE":
-            current["Type"] = text
-
-        elif tag == "DSPINBLOCK":
-            current["InQty"] = elem.findtext("DSPVCHINQTY", default="")
-            current["InAmt"] = elem.findtext("DSPVCHINAMT", default="")
-
-        elif tag == "DSPOUTBLOCK":
-            current["OutQty"] = elem.findtext("DSPVCHOUTQTY", default="")
-            current["OutAmt"] = elem.findtext("DSPVCHNETTOUTAMT", default="")
-
-        elif tag == "DSPCLBLOCK":
-            current["ClosingQty"] = elem.findtext("DSPVCHCLQTY", default="")
-            current["ClosingAmt"] = elem.findtext("DSPVCHCLAMT", default="")
-
-        elif tag == "STKVCHTRACKQTY":
-            current["TrackQty"] = text
-
-    if current:
-        stock_rows.append(current)
-
-  
-    df = pd.DataFrame(stock_rows)
-
-    cols = [ "InAmt", "OutAmt", "ClosingAmt"]
-
-    df[cols] = (
-        df[cols]
-        .apply(pd.to_numeric, errors="coerce")
-        .fillna(0.0)
-        .astype(float)
-    )
-
-    date_cols = ["Date"]
-    df[date_cols] = df[date_cols].apply(pd.to_datetime, errors="coerce")
-    return save_to_database(df, file_name) if file_name else df.to_dict(orient="records")
 
 
 # ─────────────────────────────────────────

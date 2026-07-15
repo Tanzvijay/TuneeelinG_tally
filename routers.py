@@ -7,7 +7,6 @@ from repo import (
     Movenment_analaysis,
     Statistics_Report,
     Stock_Group_Summary,
-    Stock_analzer,
     fetch_Outstanding_data,
     fetch_monthly_provision_data,
     get_table_data,
@@ -101,20 +100,7 @@ def profit_and_loss_endpoint(from_date: str, to_date: str, file_name: str = None
     return {"status": "success", "count": len(data), "data": data}
 
 
-@router.get("/stock-analysis")
-def stock_analysis_endpoint(
-    from_date: str,
-    to_date: str,
-    StockItemName: str,
-    file_name: str = None,
-):
-    data = Stock_analzer(
-        date_from=from_date,
-        date_to=to_date,
-        StockItemName=StockItemName,
-        file_name=file_name
-    )
-    return {"status": "success", "count": len(data), "data": data}
+
 
 
 @router.get("/stock-group-summary")
