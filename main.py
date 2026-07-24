@@ -14,4 +14,4 @@ app.add_middleware(
 )
 
 # Routes
-app.include_router(router)
+app.include_router(XcSc     cSCrouter)
